@@ -158,10 +158,21 @@ export class LighterExchangeAdapter implements ExchangeAdapter {
   }
 
   private logError(context: string, error: unknown): void {
-    if (process.env.LIGHTER_DEBUG === "1" || process.env.LIGHTER_DEBUG === "true") {
-      console.error(`[LighterExchangeAdapter] ${context} failed: ${extractMessage(error)}`);
+    if (process.env.LIGHTER_DEBUG !== "1" && process.env.LIGHTER_DEBUG !== "true") {
+      return;
     }
+    if (isSuccessfulResponse(error)) {
+      console.info(`[LighterExchangeAdapter] ${context}: ${JSON.stringify(error)}`);
+      return;
+    }
+    console.error(`[LighterExchangeAdapter] ${context} failed: ${extractMessage(error)}`);
   }
+}
+
+function isSuccessfulResponse(value: unknown): value is { code?: number } {
+  if (typeof value !== "object" || value == null) return false;
+  const code = (value as { code?: unknown }).code;
+  return typeof code === "number" && code === 200;
 }
 
 function resolveApiKeys(credentials: LighterCredentials): Record<number, string> {

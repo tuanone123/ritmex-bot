@@ -19,6 +19,8 @@ import type {
   LighterOrderBookSnapshot,
   LighterPosition,
 } from "./types";
+import { coerceBooleanFlag, normalizeBooleanFlag } from "./flags";
+import { normalizeOrderIdentity } from "./order-identity";
 
 export function toDepth(symbol: string, snapshot: LighterOrderBookSnapshot): AsterDepth {
   const toLevels = (levels: LighterOrderBookLevel[]): AsterDepthLevel[] =>
@@ -74,13 +76,31 @@ export function toOrders(symbol: string, orders: LighterOrder[]): AsterOrder[] {
 }
 
 export function lighterOrderToAster(symbol: string, order: LighterOrder): AsterOrder {
-  const side: OrderSide = order.is_ask || order.side?.toLowerCase() === "sell" || order.side?.toLowerCase() === "ask"
-    ? "SELL"
-    : "BUY";
+  const booleanIsAsk = normalizeBooleanFlag(order.is_ask);
+  const normalizedSide = order.side?.toLowerCase();
+  const side: OrderSide =
+    booleanIsAsk != null
+      ? booleanIsAsk
+        ? "SELL"
+        : "BUY"
+      : normalizedSide === "sell" || normalizedSide === "ask"
+        ? "SELL"
+        : "BUY";
+  const reduceOnly = coerceBooleanFlag(order.reduce_only, false);
+  const orderIndex =
+    normalizeOrderIdentity(order.order_id) ??
+    normalizeOrderIdentity(order.order_index) ??
+    normalizeOrderIdentity(order.client_order_index) ??
+    normalizeOrderIdentity(order.client_order_id) ??
+    "";
+  const clientIndex =
+    normalizeOrderIdentity(order.client_order_id) ??
+    normalizeOrderIdentity(order.client_order_index) ??
+    "";
   return {
     // Use string order id to avoid precision loss; prefer on-chain order_index for cancellation
-    orderId: String(order.order_index ?? order.client_order_index ?? ""),
-    clientOrderId: String(order.client_order_index ?? order.order_index ?? ""),
+    orderId: orderIndex,
+    clientOrderId: clientIndex || orderIndex,
     symbol,
     side,
     type: mapOrderType(order.type),
@@ -91,8 +111,8 @@ export function lighterOrderToAster(symbol: string, order: LighterOrder): AsterO
     stopPrice: order.trigger_price ?? "0",
     time: order.created_at ?? Date.now(),
     updateTime: order.updated_at ?? Date.now(),
-    reduceOnly: Boolean(order.reduce_only),
-    closePosition: Boolean(order.reduce_only ?? order.owner_account_index === undefined ? false : order.is_ask),
+    reduceOnly,
+    closePosition: reduceOnly,
     workingType: "MARK_PRICE",
     activationPrice: order.trigger_price,
   };

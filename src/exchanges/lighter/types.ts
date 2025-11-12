@@ -8,12 +8,14 @@ export type LighterOrderType =
   | "take_profit_limit"
   | string;
 
+type StrOrNum = string | number;
+
 export interface LighterOrder {
-  order_index: number;
-  client_order_index: number;
-  order_id?: string;
-  client_order_id?: string;
-  market_index: number;
+  order_index: StrOrNum;
+  client_order_index: StrOrNum;
+  order_id?: string | null;
+  client_order_id?: string | null;
+  market_index: StrOrNum;
   owner_account_index?: number;
   initial_base_amount: string;
   remaining_base_amount: string;

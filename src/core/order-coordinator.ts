@@ -166,14 +166,16 @@ export async function placeOrder(
   }
   lockOperating(locks, timers, pendings, type, log);
   try {
+    const closePosition = reduceOnly ? true : undefined;
     const order = await routeLimitOrder({
       adapter,
       symbol,
       side,
       quantity,
       price: priceNum,
-      timeInForce: "GTX",
+      timeInForce: reduceOnly ? "GTC" : "GTX",
       reduceOnly: reduceOnly ? true : undefined,
+      closePosition,
     });
     pendings[type] = String(order.orderId);
     log("order", `挂限价单: ${side} @ ${priceNum} 数量 ${quantity} reduceOnly=${reduceOnly}`);
@@ -216,12 +218,14 @@ export async function placeMarketOrder(
   await deduplicateOrders(adapter, symbol, openOrders, locks, timers, pendings, type, side, log);
   lockOperating(locks, timers, pendings, type, log);
   try {
+    const closePosition = reduceOnly ? true : undefined;
     const order = await routeMarketOrder({
       adapter,
       symbol,
       side,
       quantity,
       reduceOnly: reduceOnly ? true : undefined,
+      closePosition,
     });
     pendings[type] = String(order.orderId);
     log("order", `市价单: ${side} 数量 ${quantity} reduceOnly=${reduceOnly}`);

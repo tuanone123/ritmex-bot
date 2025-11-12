@@ -35,6 +35,8 @@ import {
 } from "./constants";
 import { decimalToScaled, scaledToDecimalString, scaleQuantityWithMinimum } from "./decimal";
 import { lighterOrderToAster, toAccountSnapshot, toDepth, toKlines, toOrders, toTicker } from "./mappers";
+import { normalizeOrderIdentity, orderIdentityEquals } from "./order-identity";
+import { shouldResetMarketOrders } from "./order-feed";
 
 interface SimpleEvent<T> {
   add(handler: (value: T) => void): void;
@@ -178,6 +180,7 @@ export class LighterGateway {
   private marketId: number | null = null;
   private priceDecimals: number | null = null;
   private sizeDecimals: number | null = null;
+  private readonly orderIndexByClientId = new Map<string, string>();
 
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -299,9 +302,12 @@ export class LighterGateway {
       if (process.env.LIGHTER_DEBUG === "1" || process.env.LIGHTER_DEBUG === "true") {
         this.logger("createOrder.sendTx.response", response);
       }
+      const clientOrderIndexStr = signParams.clientOrderIndex.toString();
       return lighterOrderToAster(this.displaySymbol, {
-        order_index: Number(signParams.clientOrderIndex % 1_000_000_000n),
-        client_order_index: Number(signParams.clientOrderIndex),
+        order_index: clientOrderIndexStr,
+        client_order_index: clientOrderIndexStr,
+        order_id: clientOrderIndexStr,
+        client_order_id: clientOrderIndexStr,
         market_index: signParams.marketIndex,
         initial_base_amount: baseAmountScaledString,
         remaining_base_amount: baseAmountScaledString,
@@ -325,14 +331,8 @@ export class LighterGateway {
     await this.ensureInitialized();
     const marketIndex = params.marketIndex ?? this.marketId;
     if (marketIndex == null) throw new Error("Market index unknown");
-    // Parse order id to BigInt without precision loss; prefer string input
-    let indexValue: bigint;
-    if (typeof params.orderId === "string") {
-      indexValue = BigInt(params.orderId);
-    } else {
-      // Fallback for numeric ids (may be unsafe if beyond 2^53-1)
-      indexValue = BigInt(Math.trunc(params.orderId));
-    }
+    const resolvedOrderId = this.resolveOrderIndex(String(params.orderId));
+    const indexValue = BigInt(resolvedOrderId);
     const { apiKeyIndex, nonce } = this.nonceManager.next();
     try {
       const signed = await this.signer.signCancelOrder({
@@ -344,10 +344,7 @@ export class LighterGateway {
       const auth = await this.ensureAuthToken();
       await this.http.sendTransaction(signed.txType, signed.txInfo, { authToken: auth });
       // Optimistically remove the order locally to avoid stale duplicates until WS confirms
-      const key = String(params.orderId);
-      this.orderMap.delete(key);
-      this.orders = Array.from(this.orderMap.values());
-      this.emitOrders();
+      this.removeOrderLocally(String(params.orderId));
     } catch (error) {
       this.nonceManager.acknowledgeFailure(apiKeyIndex);
       throw error;
@@ -843,19 +840,22 @@ export class LighterGateway {
     const marketKeys = Object.keys(ordersObject);
     if (snapshot && marketKeys.length === 0) {
       this.orderMap.clear();
+      this.orderIndexByClientId.clear();
       this.orders = [];
       this.emitOrders();
       return;
     }
     if (snapshot) {
       this.orderMap.clear();
+      this.orderIndexByClientId.clear();
     }
     for (const [market, bucket] of Object.entries(ordersObject)) {
       const marketId = Number(market);
-      const normalized = this.normalizeOrders(bucket);
-      if (Number.isFinite(marketId)) {
+      const shouldReset = shouldResetMarketOrders(bucket, snapshot);
+      if (shouldReset && Number.isFinite(marketId)) {
         this.clearOrdersForMarket(marketId);
       }
+      const normalized = this.normalizeOrders(bucket);
       if (!normalized.length) continue;
       for (const order of normalized) {
         this.applyOrderUpdate(order);
@@ -887,6 +887,7 @@ export class LighterGateway {
         this.clearOrdersForMarket(marketId);
       } else {
         this.orderMap.clear();
+        this.orderIndexByClientId.clear();
       }
     }
     for (const order of orders) {
@@ -897,26 +898,45 @@ export class LighterGateway {
   }
 
   private applyOrderUpdate(order: LighterOrder): void {
-    const key = String(order.order_index ?? order.order_id ?? order.client_order_index ?? "");
+    const orderIndex = this.extractOrderIndex(order);
+    const clientIndex = this.extractClientIndex(order);
+    if (orderIndex && clientIndex) {
+      this.orderIndexByClientId.set(clientIndex, orderIndex);
+    }
+    if (orderIndex) {
+      this.orderIndexByClientId.set(orderIndex, orderIndex);
+    }
+    const key = orderIndex ?? clientIndex;
     if (!key) return;
     const status = (order.status ?? "").toLowerCase();
     if (TERMINAL_ORDER_STATUSES.has(status)) {
+      const existing = this.orderMap.get(key);
       this.orderMap.delete(key);
+      if (existing) {
+        this.forgetOrderIdentity(existing);
+      }
       return;
     }
-    if (order.client_order_index != null || order.order_index != null) {
+    if (
+      order.client_order_index != null ||
+      order.order_index != null ||
+      order.client_order_id != null ||
+      order.order_id != null
+    ) {
       for (const [existingKey, existingOrder] of Array.from(this.orderMap.entries())) {
         if (existingKey === key) continue;
         const sameOrderIndex =
-          order.order_index != null &&
-          existingOrder.order_index != null &&
-          Number(existingOrder.order_index) === Number(order.order_index);
+          orderIdentityEquals(order.order_index, existingOrder.order_index) ||
+          orderIdentityEquals(order.order_id, existingOrder.order_id);
         const sameClientIndex =
-          order.client_order_index != null &&
-          existingOrder.client_order_index != null &&
-          Number(existingOrder.client_order_index) === Number(order.client_order_index);
+          orderIdentityEquals(order.client_order_index, existingOrder.client_order_index) ||
+          orderIdentityEquals(order.client_order_id, existingOrder.client_order_id);
         if (sameOrderIndex || sameClientIndex) {
+          const removed = this.orderMap.get(existingKey);
           this.orderMap.delete(existingKey);
+          if (removed) {
+            this.forgetOrderIdentity(removed);
+          }
         }
       }
     }
@@ -927,8 +947,12 @@ export class LighterGateway {
     const normalized = Number(marketId);
     if (!Number.isFinite(normalized)) return;
     for (const [key, existing] of Array.from(this.orderMap.entries())) {
-      if (Number(existing.market_index) === normalized) {
+      const existingMarket =
+        (existing as { market_index?: number | string; market_id?: number | string }).market_index ??
+        (existing as { market_id?: number | string }).market_id;
+      if (Number(existingMarket) === normalized) {
         this.orderMap.delete(key);
+        this.forgetOrderIdentity(existing);
       }
     }
   }
@@ -972,6 +996,54 @@ export class LighterGateway {
   private emitOrders(): void {
     const mapped = toOrders(this.displaySymbol, this.orders ?? []);
     this.ordersEvent.emit(mapped);
+  }
+
+  private resolveOrderIndex(orderId: string): string {
+    const normalized = normalizeOrderIdentity(orderId);
+    if (!normalized) {
+      throw new Error(`Invalid order id: ${orderId}`);
+    }
+    return this.orderIndexByClientId.get(normalized) ?? normalized;
+  }
+
+  private removeOrderLocally(orderId: string): void {
+    const key = normalizeOrderIdentity(orderId);
+    if (!key) return;
+    const existing = this.orderMap.get(key);
+    this.orderMap.delete(key);
+    this.orderIndexByClientId.delete(key);
+    if (existing) {
+      this.forgetOrderIdentity(existing);
+    }
+    this.orders = Array.from(this.orderMap.values());
+    this.emitOrders();
+  }
+
+  private extractOrderIndex(order: LighterOrder): string | null {
+    return (
+      normalizeOrderIdentity(order.order_id) ??
+      normalizeOrderIdentity(order.order_index) ??
+      null
+    );
+  }
+
+  private extractClientIndex(order: LighterOrder): string | null {
+    return (
+      normalizeOrderIdentity(order.client_order_id) ??
+      normalizeOrderIdentity(order.client_order_index) ??
+      null
+    );
+  }
+
+  private forgetOrderIdentity(order: LighterOrder): void {
+    const orderIndex = this.extractOrderIndex(order);
+    const clientIndex = this.extractClientIndex(order);
+    if (orderIndex) {
+      this.orderIndexByClientId.delete(orderIndex);
+    }
+    if (clientIndex) {
+      this.orderIndexByClientId.delete(clientIndex);
+    }
   }
 
   private startPolling(): void {
