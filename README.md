@@ -4,14 +4,9 @@
 
 如果您希望获取优惠并支持本项目，请考虑使用以下注册链接：
 
-* [Aster 30% 手续费优惠注册链接](https://www.asterdex.com/zh-CN/referral/4665f3)
-* [Binance 手续费优惠注册链接](https://www.binance.com/join?ref=KNKCA9XC)
-* [GRVT 手续费优惠注册链接](https://grvt.io/exchange/sign-up?ref=sea)
-* [Backpack 手续费优惠注册链接](https://backpack.exchange/join/ritmex)
-* [edgex 手续费优惠注册链接](https://pro.edgex.exchange/referral/BULL)
-* [Paradex 手续费优惠注册链接](https://paradex.io/ref/xingxingjun)
-* [Apex 手续费优惠注册链接](https://join.omni.apex.exchange/SEA)
-
+* [Aster 30% Fee Discount Referral Link](https://www.asterdex.com/en/referral/FmBN1g)
+* [GRVT Fee Discount Referral Link](https://www.asterdex.com/en/referral/FmBN1g)
+* [Hyperliquid Fee Discount Referral Link](https://www.asterdex.com/en/referral/FmBN1g)
 ## 文档索引
 - [English README](README_en.md)
 - [简明上手指南（零基础）](simple-readme.md)
